@@ -15,7 +15,7 @@ import asyncio
 import telegram
 from telegram.ext import Updater
 
-# Configure logging for Render (stdout only)
+# Configure logging for Render
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -29,6 +29,16 @@ class TelegramNotifier:
             raise ValueError("Telegram bot token and channel ID are required")
         self.bot = telegram.Bot(token=bot_token)
         self.channel_id = channel_id
+        # Test the channel ID on initialization
+        asyncio.run(self._test_channel())
+
+    async def _test_channel(self):
+        try:
+            await self.bot.get_chat(chat_id=self.channel_id)
+            logger.info(f"Telegram channel {self.channel_id} is valid")
+        except telegram.error.TelegramError as e:
+            logger.error(f"Invalid Telegram channel ID {self.channel_id}: {e}")
+            raise
 
     async def send_message(self, message: str) -> bool:
         try:
@@ -81,9 +91,7 @@ class GrassFarmingClient:
             self.telegram = None
         
         self.headers = {"Authorization": f"Bearer {self.auth_token}", "Content-Type": "application/json"}
-        # Proxies disabled by default; Render doesn't need them
-        self.proxies = None
-        self.fallback_proxies = None
+        self.proxies = None  # No proxies on Render
 
     def _generate_key(self, password: str) -> bytes:
         kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b"salt_", iterations=100000)
@@ -111,14 +119,10 @@ class GrassFarmingClient:
         self.session_snapshots.append(snapshot)
         logger.info(f"Snapshot captured: {status}")
 
-    def _test_proxy(self, proxies: Dict[str, str]) -> bool:
-        # No proxy testing needed since proxies are disabled
-        return True
-
     def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        # Updated endpoint based on Grass API speculation
-        endpoint = f"{self.api_base_url}/mining/claim"
-        payload = {"source": source, "volume": volume, "duration": duration}
+        # Trying a simpler endpoint; Grass API likely uses GraphQL or a root path
+        endpoint = f"{self.api_base_url}/claim"
+        payload = {"source": source, "amount": volume, "duration": duration}  # Adjusted payload keys
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         logger.info(f"Starting farming: Source={source}, Volume={volume}, Duration={duration}s")
@@ -137,13 +141,13 @@ class GrassFarmingClient:
                 self._capture_snapshot(request_data, response, "Success")
                 logger.info(f"Farming successful: {data}")
                 self._simulate_farming_progress(source, volume, duration)
-                points = data.get("points_earned", None)
+                points = data.get("points", data.get("points_earned", None))
                 if points is not None and self.telegram:
                     self.telegram.send_points_balance(points)
                 return data
             elif status_code == 401:
                 self._capture_snapshot(request_data, response, "Unauthorized")
-                logger.error("Error 401: Unauthorized")
+                logger.error("Error 401: Unauthorized - Check auth token")
                 return None
             elif status_code == 403:
                 self._capture_snapshot(request_data, response, "Forbidden")
@@ -179,15 +183,14 @@ class GrassFarmingClient:
             self.telegram.send_farming_update(source, volume, duration, 100.0)
 
     def get_points_balance(self) -> Optional[int]:
-        # Updated endpoint based on Grass API speculation
-        endpoint = f"{self.api_base_url}/mining/balance"
+        endpoint = f"{self.api_base_url}/balance"
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         try:
             response = requests.get(endpoint, headers=self.headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                points = data.get("points", None)  # Adjust key based on actual response
+                points = data.get("points", data.get("balance", None))
                 logger.info(f"Points balance: {points}")
                 if self.telegram:
                     self.telegram.send_points_balance(points)
@@ -221,7 +224,7 @@ def run_bot():
 
 if __name__ == "__main__":
     if not os.getenv("ENCRYPTED_AUTH_TOKEN"):
-        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA2YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
+        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA6YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
         key = "MySuperSecretKey123!"
         client = GrassFarmingClient(auth_token=raw_token, encryption_key=key, for_encryption_only=True)
         encrypted_token = client._encrypt_token(raw_token, key)
