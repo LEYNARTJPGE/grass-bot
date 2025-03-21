@@ -2,3 +2,4 @@ requests
 fake-useragent
 cryptography
 python-telegram-bot
+websocket-client

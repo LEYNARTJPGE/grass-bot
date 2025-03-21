@@ -11,17 +11,34 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
+import threading
+import websocket
 import asyncio
 import telegram
 from telegram.ext import Updater
 
-# Configure logging
+# Configure logging for Render
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+def get_user_id_from_token(token):
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+        payload = parts[1]
+        padding = '=' * (4 - len(payload) % 4)
+        payload += padding
+        decoded = base64.urlsafe_b64decode(payload)
+        payload_json = json.loads(decoded)
+        return payload_json.get('userId')
+    except Exception as e:
+        logger.error(f"Failed to decode token: {e}")
+        return None
 
 class TelegramNotifier:
     def __init__(self, bot_token: str, channel_id: str):
@@ -62,17 +79,66 @@ class TelegramNotifier:
         )
         asyncio.run(self.send_message(message))
 
+class GrassWebSocketClient:
+    def __init__(self, ws_url, auth_token, user_id):
+        self.ws_url = ws_url
+        self.auth_token = auth_token
+        self.user_id = user_id
+        self.ws = None
+        self.running = False
+
+    def on_open(self, ws):
+        logger.info(f"WebSocket connection opened")
+        self.running = True
+        auth_message = json.dumps({"userId": self.user_id, "type": "auth"})
+        ws.send(auth_message)
+        threading.Thread(target=self.send_ping, args=(ws,), daemon=True).start()
+
+    def on_message(self, ws, message):
+        logger.info(f"Received: {message}")
+        data = json.loads(message)
+        if "points" in data:
+            logger.info(f"Current points: {data['points']}")
+
+    def on_error(self, ws, error):
+        logger.error(f"WebSocket error: {error}")
+
+    def on_close(self, ws, close_status_code, close_msg):
+        logger.info(f"WebSocket closed: {close_status_code} - {close_msg}")
+        self.running = False
+
+    def send_ping(self, ws):
+        while self.running:
+            try:
+                ws.send(json.dumps({"type": "ping"}))
+                logger.info("Sent ping")
+                time.sleep(30)
+            except Exception as e:
+                logger.error(f"Ping failed: {e}")
+                break
+
+    def connect(self):
+        self.ws = websocket.WebSocketApp(
+            self.ws_url,
+            header={"Authorization": f"Bearer {self.auth_token}"},
+            on_open=self.on_open,
+            on_message=self.on_message,
+            on_error=self.on_error,
+            on_close=self.on_close
+        )
+        self.ws.run_forever()
+
 class GrassFarmingClient:
-    def __init__(self, auth_token: Optional[str] = None, encryption_key: Optional[str] = None, for_encryption_only: bool = False):
+    def __init__(self, for_encryption_only: bool = False):
         self.api_base_url = os.getenv("API_BASE_URL", "https://api.getgrass.io")
-        if auth_token and encryption_key:
-            self.auth_token = auth_token
-        else:
-            encrypted_token = os.getenv("ENCRYPTED_AUTH_TOKEN")
-            key = os.getenv("ENCRYPTION_KEY")
-            if not (encrypted_token and key):
-                raise ValueError("ENCRYPTED_AUTH_TOKEN and ENCRYPTION_KEY must be set in environment variables")
-            self.auth_token = self._decrypt_token(encrypted_token, key)
+        encrypted_token = os.getenv("ENCRYPTED_AUTH_TOKEN")
+        key = os.getenv("ENCRYPTION_KEY")
+        if not (encrypted_token and key):
+            raise ValueError("ENCRYPTED_AUTH_TOKEN and ENCRYPTION_KEY must be set in environment variables")
+        self.auth_token = self._decrypt_token(encrypted_token, key)
+        self.user_id = get_user_id_from_token(self.auth_token)
+        if not self.user_id:
+            raise ValueError("Could not extract user ID from token")
         
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.telegram_channel_id = os.getenv("TELEGRAM_CHANNEL_ID")
@@ -103,121 +169,59 @@ class GrassFarmingClient:
     def _get_random_user_agent(self) -> str:
         return self.ua.random
 
-    def _capture_snapshot(self, request_data: Dict[str, Any], response: Any, status: str) -> None:
-        snapshot = {
-            "timestamp": str(datetime.now()),
-            "request": request_data,
-            "response": response.text if response else None,
-            "status": status,
-            "proxy_used": "None"
-        }
-        self.session_snapshots.append(snapshot)
-        logger.info(f"Snapshot captured: {status}")
-
-    def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        endpoint = f"{self.api_base_url}/api"
-        payload = {
-            "operation": "claim",
-            "source": source,
-            "amount": volume,
-            "duration": duration
-        }
-        self.headers["User-Agent"] = self._get_random_user_agent()
-
-        logger.info(f"Starting farming: Source={source}, Volume={volume}, Duration={duration}s")
-        if self.telegram:
-            self.telegram.send_farming_update(source, volume, duration, 0.0)
-
-        request_data = {"endpoint": endpoint, "payload": payload, "headers": self.headers}
-        response = None
-
-        try:
-            response = requests.post(endpoint, headers=self.headers, data=json.dumps(payload), timeout=10)
-            status_code = response.status_code
-
-            if status_code in (200, 201):
-                data = response.json()
-                self._capture_snapshot(request_data, response, "Success")
-                logger.info(f"Farming successful: {data}")
-                self._simulate_farming_progress(source, volume, duration)
-                points = data.get("points", data.get("points_earned", None))
-                if points is not None and self.telegram:
-                    self.telegram.send_points_balance(points)
-                return data
-            elif status_code == 404:
-                self._capture_snapshot(request_data, response, "Status 404")
-                logger.error(f"Endpoint not found: {response.text}")
-                return None
-            else:
-                self._capture_snapshot(request_data, response, f"Status {status_code}")
-                logger.error(f"Unexpected status code {status_code}: {response.text}")
-                return None
-
-        except requests.RequestException as e:
-            self._capture_snapshot(request_data, None, f"Request Failed: {str(e)}")
-            logger.error(f"Request failed: {e}")
-            return None
-
-    def _simulate_farming_progress(self, source: str, volume: int, duration: int) -> None:
-        start_time = time.time()
-        interval = max(1, duration // 10)
-        while time.time() - start_time < duration:
-            elapsed = int(time.time() - start_time)
-            progress = min(100, (elapsed / duration) * 100)
-            logger.info(f"Farming in progress: {progress:.1f}% complete ({elapsed}/{duration}s)")
-            if self.telegram:
-                self.telegram.send_farming_update(source, volume, duration, progress)
-            time.sleep(interval)
-        logger.info(f"Farming completed: 100% ({duration}/{duration}s)")
-        if self.telegram:
-            self.telegram.send_farming_update(source, volume, duration, 100.0)
-
     def get_points_balance(self) -> Optional[int]:
-        endpoint = f"{self.api_base_url}/api"
-        payload = {"operation": "balance"}
+        endpoint = f"{self.api_base_url}/user/{self.user_id}"
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         try:
-            response = requests.post(endpoint, headers=self.headers, data=json.dumps(payload), timeout=10)
+            response = requests.get(endpoint, headers=self.headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                points = data.get("points", data.get("balance", None))
-                logger.info(f"Points balance: {points}")
-                if self.telegram:
-                    self.telegram.send_points_balance(points)
-                return points
+                points = data.get("points", None)
+                if points is not None:
+                    logger.info(f"Points balance: {points}")
+                    if self.telegram:
+                        self.telegram.send_points_balance(points)
+                    return points
+                else:
+                    logger.warning("Points not found in user data")
+                    return None
             else:
-                logger.error(f"Failed to get points: {response.status_code} - {response.text}")
+                logger.error(f"Failed to get user data: {response.status_code} - {response.text}")
                 return None
         except requests.RequestException as e:
-            logger.error(f"Error getting points: {e}")
+            logger.error(f"Error getting user data: {e}")
             return None
 
 def run_bot():
     try:
         client = GrassFarmingClient()
+        ws_url = "wss://api.getgrass.io/ws"
+        ws_client = GrassWebSocketClient(ws_url, client.auth_token, client.user_id)
+        ws_thread = threading.Thread(target=ws_client.connect, daemon=True)
+        ws_thread.start()
+
         start_time = datetime.now()
         duration = timedelta(hours=24)
 
         while datetime.now() - start_time < duration:
             try:
-                client.farm_points(source="web", volume=1024, duration=300)
                 points = client.get_points_balance()
-                logger.info(f"Cycle completed. Points: {points}")
-                time.sleep(300)
+                if points is not None:
+                    logger.info(f"Current points: {points}")
+                time.sleep(300)  # Check every 5 minutes
             except Exception as e:
-                logger.error(f"Bot crashed: {e}. Restarting in 60 seconds...")
+                logger.error(f"Error in bot loop: {e}")
                 time.sleep(60)
-                continue
     except Exception as e:
         logger.error(f"Failed to initialize bot: {e}")
         raise
 
 if __name__ == "__main__":
     if not os.getenv("ENCRYPTED_AUTH_TOKEN"):
-        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA2YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"  
+        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA6YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
         key = "MySuperSecretKey123!"
-        client = GrassFarmingClient(auth_token=raw_token, encryption_key=key, for_encryption_only=True)
+        client = GrassFarmingClient(for_encryption_only=True)
         encrypted_token = client._encrypt_token(raw_token, key)
         logger.info(f"Encrypted token: {encrypted_token}")
         logger.info("Set ENCRYPTED_AUTH_TOKEN and ENCRYPTION_KEY in your Render environment variables.")
