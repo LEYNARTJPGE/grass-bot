@@ -32,7 +32,7 @@ class TelegramNotifier:
             logger.info(f"Telegram initialized successfully for channel {self.channel_id}")
         except telegram.error.TelegramError as e:
             logger.warning(f"Telegram setup failed: {e}. Notifications disabled.")
-            self.bot = None  # Disable Telegram if setup fails
+            self.bot = None
 
     async def _test_channel(self):
         await self.bot.get_chat(chat_id=self.channel_id)
@@ -86,7 +86,7 @@ class GrassFarmingClient:
             self.telegram = None
         
         self.headers = {"Authorization": f"Bearer {self.auth_token}", "Content-Type": "application/json"}
-        self.proxies = None  # No proxies on Render
+        self.proxies = None
 
     def _generate_key(self, password: str) -> bytes:
         kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b"salt_", iterations=100000)
@@ -115,8 +115,19 @@ class GrassFarmingClient:
         logger.info(f"Snapshot captured: {status}")
 
     def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        endpoint = f"{self.api_base_url}/claim"
-        payload = {"source": source, "amount": volume, "duration": duration}
+        endpoint = f"{self.api_base_url}/graphql"
+        query = """
+        mutation ClaimPoints($source: String!, $amount: Int!, $duration: Int!) {
+            claim(source: $source, amount: $amount, duration: $duration) {
+                points
+                success
+            }
+        }
+        """
+        payload = {
+            "query": query,
+            "variables": {"source": source, "amount": volume, "duration": duration}
+        }
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         logger.info(f"Starting farming: Source={source}, Volume={volume}, Duration={duration}s")
@@ -135,7 +146,7 @@ class GrassFarmingClient:
                 self._capture_snapshot(request_data, response, "Success")
                 logger.info(f"Farming successful: {data}")
                 self._simulate_farming_progress(source, volume, duration)
-                points = data.get("points", data.get("points_earned", None))
+                points = data.get("data", {}).get("claim", {}).get("points", None)
                 if points is not None and self.telegram:
                     self.telegram.send_points_balance(points)
                 return data
@@ -177,14 +188,22 @@ class GrassFarmingClient:
             self.telegram.send_farming_update(source, volume, duration, 100.0)
 
     def get_points_balance(self) -> Optional[int]:
-        endpoint = f"{self.api_base_url}/balance"
+        endpoint = f"{self.api_base_url}/graphql"
+        query = """
+        query GetBalance {
+            balance {
+                points
+            }
+        }
+        """
+        payload = {"query": query}
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         try:
-            response = requests.get(endpoint, headers=self.headers, timeout=10)
+            response = requests.post(endpoint, headers=self.headers, data=json.dumps(payload), timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                points = data.get("points", data.get("balance", None))
+                points = data.get("data", {}).get("balance", {}).get("points", None)
                 logger.info(f"Points balance: {points}")
                 if self.telegram:
                     self.telegram.send_points_balance(points)
