@@ -15,7 +15,7 @@ import asyncio
 import telegram
 from telegram.ext import Updater
 
-# Configure logging for Render
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -115,8 +115,13 @@ class GrassFarmingClient:
         logger.info(f"Snapshot captured: {status}")
 
     def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        endpoint = f"{self.api_base_url}/v1/mining/claim"
-        payload = {"source": source, "amount": volume, "duration": duration}
+        endpoint = f"{self.api_base_url}/api"
+        payload = {
+            "operation": "claim",
+            "source": source,
+            "amount": volume,
+            "duration": duration
+        }
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         logger.info(f"Starting farming: Source={source}, Volume={volume}, Duration={duration}s")
@@ -139,18 +144,9 @@ class GrassFarmingClient:
                 if points is not None and self.telegram:
                     self.telegram.send_points_balance(points)
                 return data
-            elif status_code == 401:
-                self._capture_snapshot(request_data, response, "Unauthorized")
-                logger.error("Error 401: Unauthorized - Check auth token")
-                return None
-            elif status_code == 403:
-                self._capture_snapshot(request_data, response, "Forbidden")
-                logger.error("Error 403: Forbidden")
-                return None
-            elif status_code == 429:
-                self._capture_snapshot(request_data, response, "Rate Limited")
-                logger.warning("Error 429: Too Many Requests")
-                time.sleep(60)
+            elif status_code == 404:
+                self._capture_snapshot(request_data, response, "Status 404")
+                logger.error(f"Endpoint not found: {response.text}")
                 return None
             else:
                 self._capture_snapshot(request_data, response, f"Status {status_code}")
@@ -177,11 +173,12 @@ class GrassFarmingClient:
             self.telegram.send_farming_update(source, volume, duration, 100.0)
 
     def get_points_balance(self) -> Optional[int]:
-        endpoint = f"{self.api_base_url}/v1/mining/balance"
+        endpoint = f"{self.api_base_url}/api"
+        payload = {"operation": "balance"}
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         try:
-            response = requests.get(endpoint, headers=self.headers, timeout=10)
+            response = requests.post(endpoint, headers=self.headers, data=json.dumps(payload), timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 points = data.get("points", data.get("balance", None))
@@ -218,7 +215,7 @@ def run_bot():
 
 if __name__ == "__main__":
     if not os.getenv("ENCRYPTED_AUTH_TOKEN"):
-        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA6YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
+        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA2YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"  
         key = "MySuperSecretKey123!"
         client = GrassFarmingClient(auth_token=raw_token, encryption_key=key, for_encryption_only=True)
         encrypted_token = client._encrypt_token(raw_token, key)
