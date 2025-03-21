@@ -15,18 +15,18 @@ import asyncio
 import telegram
 from telegram.ext import Updater
 
-# Configure logging
+# Configure logging for Render (stdout only)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]  # Render captures stdout; no file logging
+    handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
 class TelegramNotifier:
     def __init__(self, bot_token: str, channel_id: str):
-        if not bot_token:
-            raise ValueError("Telegram bot token is required")
+        if not bot_token or not channel_id:
+            raise ValueError("Telegram bot token and channel ID are required")
         self.bot = telegram.Bot(token=bot_token)
         self.channel_id = channel_id
 
@@ -65,8 +65,6 @@ class GrassFarmingClient:
                 raise ValueError("ENCRYPTED_AUTH_TOKEN and ENCRYPTION_KEY must be set in environment variables")
             self.auth_token = self._decrypt_token(encrypted_token, key)
         
-        self.proxy_address = os.getenv("PROXY_ADDRESS", "127.0.0.1")
-        self.proxy_port = int(os.getenv("PROXY_PORT", 8080))
         self.telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
         self.telegram_channel_id = os.getenv("TELEGRAM_CHANNEL_ID")
         
@@ -83,8 +81,9 @@ class GrassFarmingClient:
             self.telegram = None
         
         self.headers = {"Authorization": f"Bearer {self.auth_token}", "Content-Type": "application/json"}
-        self.proxies = {"http": f"http://{self.proxy_address}:{self.proxy_port}", "https": f"http://{self.proxy_address}:{self.proxy_port}"}
-        self.fallback_proxies = {"http": "http://20.235.107.191:80", "https": "http://20.235.107.191:80"}
+        # Proxies disabled by default; Render doesn't need them
+        self.proxies = None
+        self.fallback_proxies = None
 
     def _generate_key(self, password: str) -> bytes:
         kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=b"salt_", iterations=100000)
@@ -107,24 +106,18 @@ class GrassFarmingClient:
             "request": request_data,
             "response": response.text if response else None,
             "status": status,
-            "proxy_used": self.proxies if response else "Fallback or None"
+            "proxy_used": "None"
         }
         self.session_snapshots.append(snapshot)
         logger.info(f"Snapshot captured: {status}")
 
     def _test_proxy(self, proxies: Dict[str, str]) -> bool:
-        test_url = "https://api.ipify.org"
-        try:
-            response = requests.get(test_url, proxies=proxies, timeout=5)
-            response.raise_for_status()
-            logger.info(f"Proxy {proxies['http']} is working. IP: {response.text}")
-            return True
-        except requests.RequestException as e:
-            logger.warning(f"Proxy {proxies['http']} failed: {e}")
-            return False
+        # No proxy testing needed since proxies are disabled
+        return True
 
     def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        endpoint = f"{self.api_base_url}/earn"
+        # Updated endpoint based on Grass API speculation
+        endpoint = f"{self.api_base_url}/mining/claim"
         payload = {"source": source, "volume": volume, "duration": duration}
         self.headers["User-Agent"] = self._get_random_user_agent()
 
@@ -132,17 +125,11 @@ class GrassFarmingClient:
         if self.telegram:
             self.telegram.send_farming_update(source, volume, duration, 0.0)
 
-        active_proxies = self.proxies if self._test_proxy(self.proxies) else self.fallback_proxies
-        if not self._test_proxy(active_proxies):
-            logger.warning("Both proxies failed. Using direct connection.")
-            active_proxies = None
-
         request_data = {"endpoint": endpoint, "payload": payload, "headers": self.headers}
         response = None
 
         try:
-            response = requests.post(endpoint, headers=self.headers, data=json.dumps(payload),
-                                    proxies=active_proxies, timeout=10)
+            response = requests.post(endpoint, headers=self.headers, data=json.dumps(payload), timeout=10)
             status_code = response.status_code
 
             if status_code in (200, 201):
@@ -192,21 +179,21 @@ class GrassFarmingClient:
             self.telegram.send_farming_update(source, volume, duration, 100.0)
 
     def get_points_balance(self) -> Optional[int]:
-        endpoint = f"{self.api_base_url}/points"
+        # Updated endpoint based on Grass API speculation
+        endpoint = f"{self.api_base_url}/mining/balance"
         self.headers["User-Agent"] = self._get_random_user_agent()
-        active_proxies = self.proxies if self._test_proxy(self.proxies) else self.fallback_proxies
 
         try:
-            response = requests.get(endpoint, headers=self.headers, proxies=active_proxies, timeout=10)
+            response = requests.get(endpoint, headers=self.headers, timeout=10)
             if response.status_code == 200:
                 data = response.json()
-                points = data.get("points", None)
+                points = data.get("points", None)  # Adjust key based on actual response
                 logger.info(f"Points balance: {points}")
                 if self.telegram:
                     self.telegram.send_points_balance(points)
                 return points
             else:
-                logger.error(f"Failed to get points: {response.status_code}")
+                logger.error(f"Failed to get points: {response.status_code} - {response.text}")
                 return None
         except requests.RequestException as e:
             logger.error(f"Error getting points: {e}")
@@ -233,8 +220,7 @@ def run_bot():
         raise
 
 if __name__ == "__main__":
-    # For local encryption only (run locally, not on Render)
-    if not os.getenv("ENCRYPTED_AUTH_TOKEN"):  # If no env var set, assume encryption mode
+    if not os.getenv("ENCRYPTED_AUTH_TOKEN"):
         raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA2YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
         key = "MySuperSecretKey123!"
         client = GrassFarmingClient(auth_token=raw_token, encryption_key=key, for_encryption_only=True)
@@ -242,5 +228,4 @@ if __name__ == "__main__":
         logger.info(f"Encrypted token: {encrypted_token}")
         logger.info("Set ENCRYPTED_AUTH_TOKEN and ENCRYPTION_KEY in your Render environment variables.")
     else:
-        # On Render, run the bot with environment variables
         run_bot()
