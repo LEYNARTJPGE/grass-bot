@@ -124,7 +124,7 @@ class GrassFarmingClient:
             return False
 
     def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        endpoint = f"{self.api_base_url}/traffic/farm"
+        endpoint = f"{self.api_base_url}/earn"
         payload = {"source": source, "volume": volume, "duration": duration}
         self.headers["User-Agent"] = self._get_random_user_agent()
 
@@ -192,7 +192,7 @@ class GrassFarmingClient:
             self.telegram.send_farming_update(source, volume, duration, 100.0)
 
     def get_points_balance(self) -> Optional[int]:
-        endpoint = f"{self.api_base_url}/user/points"
+        endpoint = f"{self.api_base_url}/points"
         self.headers["User-Agent"] = self._get_random_user_agent()
         active_proxies = self.proxies if self._test_proxy(self.proxies) else self.fallback_proxies
 
