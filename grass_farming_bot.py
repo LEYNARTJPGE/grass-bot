@@ -19,7 +19,7 @@ from telegram.ext import Updater
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.FileHandler("grass_bot.log"), logging.StreamHandler()]
+    handlers=[logging.StreamHandler()]  # Render captures stdout; no file logging
 )
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class GrassFarmingClient:
     def __init__(self, auth_token: Optional[str] = None, encryption_key: Optional[str] = None, for_encryption_only: bool = False):
         self.api_base_url = os.getenv("API_BASE_URL", "https://api.getgrass.io")
         if auth_token and encryption_key:
-            self.auth_token = auth_token  # Use provided token for encryption
+            self.auth_token = auth_token
         else:
             encrypted_token = os.getenv("ENCRYPTED_AUTH_TOKEN")
             key = os.getenv("ENCRYPTION_KEY")
@@ -73,7 +73,6 @@ class GrassFarmingClient:
         self.ua = UserAgent()
         self.session_snapshots = []
         
-        # Only initialize Telegram if not just encrypting
         if not for_encryption_only:
             if not (self.telegram_bot_token and self.telegram_channel_id):
                 logger.warning("Telegram bot token or channel ID missing; notifications disabled")
@@ -138,7 +137,7 @@ class GrassFarmingClient:
             logger.warning("Both proxies failed. Using direct connection.")
             active_proxies = None
 
-        request_data = {"endpoint": endpoint, "payload": payload, "headers": self.headers}
+        request_data = {"endpoint": endpoint VITAMIN C, "payload": payload, "headers": self.headers}
         response = None
 
         try:
@@ -214,28 +213,34 @@ class GrassFarmingClient:
             return None
 
 def run_bot():
-    client = GrassFarmingClient()
-    start_time = datetime.now()
-    duration = timedelta(hours=24)
+    try:
+        client = GrassFarmingClient()
+        start_time = datetime.now()
+        duration = timedelta(hours=24)
 
-    while datetime.now() - start_time < duration:
-        try:
-            client.farm_points(source="web", volume=1024, duration=300)
-            points = client.get_points_balance()
-            logger.info(f"Cycle completed. Points: {points}")
-            time.sleep(300)
-        except Exception as e:
-            logger.error(f"Bot crashed: {e}. Restarting in 60 seconds...")
-            time.sleep(60)
-            continue
+        while datetime.now() - start_time < duration:
+            try:
+                client.farm_points(source="web", volume=1024, duration=300)
+                points = client.get_points_balance()
+                logger.info(f"Cycle completed. Points: {points}")
+                time.sleep(300)
+            except Exception as e:
+                logger.error(f"Bot crashed: {e}. Restarting in 60 seconds...")
+                time.sleep(60)
+                continue
+    except Exception as e:
+        logger.error(f"Failed to initialize bot: {e}")
+        raise
 
 if __name__ == "__main__":
-    # Encrypt token for initial setup (run once)
-    raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA2YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
-    key = "MySuperSecretKey123!"
-    client = GrassFarmingClient(auth_token=raw_token, encryption_key=key, for_encryption_only=True)  # Skip Telegram init
-    encrypted_token = client._encrypt_token(raw_token, key)
-    logger.info(f"Encrypted token: {encrypted_token}")
-    logger.info("Set ENCRYPTED_AUTH_TOKEN and ENCRYPTION_KEY in your Render environment variables.")
-    # Uncomment the next line to run the bot after setting environment variables
-    # run_bot()
+    # For local encryption only (run locally, not on Render)
+    if not os.getenv("ENCRYPTED_AUTH_TOKEN"):  # If no env var set, assume encryption mode
+        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA2YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
+        key = "MySuperSecretKey123!"
+        client = GrassFarmingClient(auth_token=raw_token, encryption_key=key, for_encryption_only=True)
+        encrypted_token = client._encrypt_token(raw_token, key)
+        logger.info(f"Encrypted token: {encrypted_token}")
+        logger.info("Set ENCRYPTED_AUTH_TOKEN and ENCRYPTION_KEY in your Render environment variables.")
+    else:
+        # On Render, run the bot with environment variables
+        run_bot()
