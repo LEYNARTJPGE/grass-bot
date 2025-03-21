@@ -115,7 +115,7 @@ class GrassFarmingClient:
         logger.info(f"Snapshot captured: {status}")
 
     def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        endpoint = f"{self.api_base_url}/api/v1/claim"
+        endpoint = f"{self.api_base_url}/v1/mining/claim"
         payload = {"source": source, "amount": volume, "duration": duration}
         self.headers["User-Agent"] = self._get_random_user_agent()
 
@@ -177,7 +177,7 @@ class GrassFarmingClient:
             self.telegram.send_farming_update(source, volume, duration, 100.0)
 
     def get_points_balance(self) -> Optional[int]:
-        endpoint = f"{self.api_base_url}/api/v1/balance"
+        endpoint = f"{self.api_base_url}/v1/mining/balance"
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         try:
