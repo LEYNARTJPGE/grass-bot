@@ -137,7 +137,7 @@ class GrassFarmingClient:
             logger.warning("Both proxies failed. Using direct connection.")
             active_proxies = None
 
-        request_data = {"endpoint": endpoint VITAMIN C, "payload": payload, "headers": self.headers}
+        request_data = {"endpoint": endpoint, "payload": payload, "headers": self.headers}
         response = None
 
         try:
