@@ -88,7 +88,7 @@ class GrassWebSocketClient:
         self.running = False
 
     def on_open(self, ws):
-        logger.info(f"WebSocket connection opened")
+        logger.info(f"WebSocket connection opened to {self.ws_url}")
         self.running = True
         auth_message = json.dumps({"userId": self.user_id, "type": "auth"})
         ws.send(auth_message)
@@ -98,7 +98,7 @@ class GrassWebSocketClient:
         logger.info(f"Received: {message}")
         data = json.loads(message)
         if "points" in data:
-            logger.info(f"Current points: {data['points']}")
+            logger.info(f"Current points from WebSocket: {data['points']}")
 
     def on_error(self, ws, error):
         logger.error(f"WebSocket error: {error}")
@@ -120,7 +120,7 @@ class GrassWebSocketClient:
     def connect(self):
         self.ws = websocket.WebSocketApp(
             self.ws_url,
-            header={"Authorization": f"Bearer {self.auth_token}"},
+            header={"Authorization": f"Bearer {self.auth_token}", "User-Agent": UserAgent().random},
             on_open=self.on_open,
             on_message=self.on_message,
             on_error=self.on_error,
@@ -170,7 +170,7 @@ class GrassFarmingClient:
         return self.ua.random
 
     def get_points_balance(self) -> Optional[int]:
-        endpoint = f"{self.api_base_url}/user/{self.user_id}"
+        endpoint = f"{self.api_base_url}/stats"
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         try:
@@ -184,19 +184,19 @@ class GrassFarmingClient:
                         self.telegram.send_points_balance(points)
                     return points
                 else:
-                    logger.warning("Points not found in user data")
+                    logger.warning("Points not found in stats response")
                     return None
             else:
-                logger.error(f"Failed to get user data: {response.status_code} - {response.text}")
+                logger.error(f"Failed to get stats: {response.status_code} - {response.text}")
                 return None
         except requests.RequestException as e:
-            logger.error(f"Error getting user data: {e}")
+            logger.error(f"Error getting stats: {e}")
             return None
 
 def run_bot():
     try:
         client = GrassFarmingClient()
-        ws_url = "wss://api.getgrass.io/ws"
+        ws_url = "wss://api.getgrass.io/v1/ws"
         ws_client = GrassWebSocketClient(ws_url, client.auth_token, client.user_id)
         ws_thread = threading.Thread(target=ws_client.connect, daemon=True)
         ws_thread.start()
@@ -209,6 +209,8 @@ def run_bot():
                 points = client.get_points_balance()
                 if points is not None:
                     logger.info(f"Current points: {points}")
+                if client.telegram:
+                    client.telegram.send_farming_update("web", 1024, 300, ((datetime.now() - start_time).seconds / 86400) * 100)
                 time.sleep(300)  # Check every 5 minutes
             except Exception as e:
                 logger.error(f"Error in bot loop: {e}")
