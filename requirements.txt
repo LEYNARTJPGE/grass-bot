@@ -1,0 +1,4 @@
+requests
+fake-useragent
+cryptography
+python-telegram-bot
