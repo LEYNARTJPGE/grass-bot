@@ -25,22 +25,21 @@ logger = logging.getLogger(__name__)
 
 class TelegramNotifier:
     def __init__(self, bot_token: str, channel_id: str):
-        if not bot_token or not channel_id:
-            raise ValueError("Telegram bot token and channel ID are required")
         self.bot = telegram.Bot(token=bot_token)
         self.channel_id = channel_id
-        # Test the channel ID on initialization
-        asyncio.run(self._test_channel())
+        try:
+            asyncio.run(self._test_channel())
+            logger.info(f"Telegram initialized successfully for channel {self.channel_id}")
+        except telegram.error.TelegramError as e:
+            logger.warning(f"Telegram setup failed: {e}. Notifications disabled.")
+            self.bot = None  # Disable Telegram if setup fails
 
     async def _test_channel(self):
-        try:
-            await self.bot.get_chat(chat_id=self.channel_id)
-            logger.info(f"Telegram channel {self.channel_id} is valid")
-        except telegram.error.TelegramError as e:
-            logger.error(f"Invalid Telegram channel ID {self.channel_id}: {e}")
-            raise
+        await self.bot.get_chat(chat_id=self.channel_id)
 
     async def send_message(self, message: str) -> bool:
+        if not self.bot:
+            return False
         try:
             await self.bot.send_message(chat_id=self.channel_id, text=message)
             logger.info(f"Telegram message sent: {message}")
@@ -81,12 +80,8 @@ class GrassFarmingClient:
         self.ua = UserAgent()
         self.session_snapshots = []
         
-        if not for_encryption_only:
-            if not (self.telegram_bot_token and self.telegram_channel_id):
-                logger.warning("Telegram bot token or channel ID missing; notifications disabled")
-                self.telegram = None
-            else:
-                self.telegram = TelegramNotifier(self.telegram_bot_token, self.telegram_channel_id)
+        if not for_encryption_only and self.telegram_bot_token and self.telegram_channel_id:
+            self.telegram = TelegramNotifier(self.telegram_bot_token, self.telegram_channel_id)
         else:
             self.telegram = None
         
@@ -120,9 +115,8 @@ class GrassFarmingClient:
         logger.info(f"Snapshot captured: {status}")
 
     def farm_points(self, source: str, volume: int, duration: int) -> Optional[Dict[str, Any]]:
-        # Trying a simpler endpoint; Grass API likely uses GraphQL or a root path
         endpoint = f"{self.api_base_url}/claim"
-        payload = {"source": source, "amount": volume, "duration": duration}  # Adjusted payload keys
+        payload = {"source": source, "amount": volume, "duration": duration}
         self.headers["User-Agent"] = self._get_random_user_agent()
 
         logger.info(f"Starting farming: Source={source}, Volume={volume}, Duration={duration}s")
@@ -224,7 +218,7 @@ def run_bot():
 
 if __name__ == "__main__":
     if not os.getenv("ENCRYPTED_AUTH_TOKEN"):
-        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA6YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXEFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
+        raw_token = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6IkJseGtPeW9QaWIwMlNzUlpGeHBaN2JlSzJOSEJBMSJ9.eyJ1c2VySWQiOiJmNzc2N2RjZS1hN2Y3LTQ0NWUtOTE2Mi02MDA6YWY4NTBiZjkiLCJlbWFpbCI6ImVuY2FybmFjaW9uamF5cGVlMjRAZ21haWwuY29tIiwic2NvcGUiOiJTRUxMRVIiLCJpYXQiOjE3NDI1NzA3MjEsIm5iZiI6MTc0MjU3MDcyMSwiZXhwIjoxNzczNjc0NzIxLCJhdWQiOiJ3eW5kLXVzZXJzIiwiaXNzIjoiaHR0cHM6Ly93eW5kLnMzLmFtYXpvbmF3cy5jb20vcHVibGljIn0.ehbLCZszUe_1uYQhQZxRNNBPyIC5Unlcv1SGu4mAcQv1RXAlht7nfDhWHbZwwTcpy_JBMvkuyxPOVSBRpT-vhLV4p8UqeTh_OzWbN56YdSwsL-gAT-FKZ3C9ZM70Dyx5xfndxOzPTEXYAGrSuSxhHQLMlZA_rHaxBsuI-TEuFgOdjvernMSASw0AbtjLk7_HYitg_D6lYtSvmuLTfIGo9WzAP8H57ukSJTDG2hbHnprcF75m7U_mB36eSeTbN-rsMXfYHB5etRJ28b45oOjdhfgaaTH41Eb8HsEyopxqSlFIRWHQ3RrXFquyde4-NvF04_9_rqecTe7L6JbGx1B9w"
         key = "MySuperSecretKey123!"
         client = GrassFarmingClient(auth_token=raw_token, encryption_key=key, for_encryption_only=True)
         encrypted_token = client._encrypt_token(raw_token, key)
